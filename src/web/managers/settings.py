@@ -101,6 +101,9 @@ class SettingsManager:
         should_trigger_update |= self.check_and_update_setting(
             "mining_benefits", settings_data.get("mining_benefits"), True
         )
+        should_trigger_update |= self.check_and_update_setting(
+            "webui_auth_enabled", settings_data.get("webui_auth_enabled")
+        )
 
         self._settings.save()
         asyncio.create_task(self._broadcaster.emit("settings_updated", self.get_settings()))

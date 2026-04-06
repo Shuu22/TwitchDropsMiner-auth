@@ -51,8 +51,61 @@ services:
     environment:
       # Set timezone (optional, defaults to UTC)
       - TZ=Australia/Sydney
+      # Optional Web UI Basic Auth credentials (only used when enabled in Settings)
+      - TDM_WEBUI_AUTH_USERNAME=admin
+      - TDM_WEBUI_AUTH_PASSWORD=change-me
+      # Optional: explicit CORS origins for production (comma-separated)
+      - TDM_WEBUI_ALLOWED_ORIGINS=https://example.com,https://admin.example.com
     restart: unless-stopped
 ```
+
+### 🔐 Optional Web UI Authentication
+
+Web UI authentication is separate from Twitch login and is disabled by default.
+
+1. Set environment variables:
+   - `TDM_WEBUI_AUTH_USERNAME`
+   - `TDM_WEBUI_AUTH_PASSWORD`
+   - `TDM_WEBUI_ALLOWED_ORIGINS` (optional, comma-separated for production)
+2. Open the app settings in the Web UI and enable **Protect Web UI with Basic Auth**.
+3. Restart the application.
+
+If Web UI auth is enabled but credentials are missing, protected routes fail closed with `503 Service unavailable`.
+If `TDM_WEBUI_ALLOWED_ORIGINS` is not set, development behavior remains permissive (`*`).
+When set, only valid `http(s)://host[:port]` origins are accepted; invalid entries are ignored.
+Auth environment values are cached briefly (up to 5 seconds) to reduce per-request overhead.
+Built-in auth failure rate limit is enabled; for internet exposure, use a reverse proxy (Nginx/Caddy/Traefik) with TLS and additional rate limiting.
+
+### 🩺 Diagnostics Mode (Temporary, Runtime-Only)
+
+- Diagnostics is only available when Web UI auth is enabled and the user is authenticated.
+- It is disabled by default, can be enabled from the Web UI, and is not persisted across restarts.
+- If auth is disabled, user is unauthenticated, or diagnostics is not enabled, diagnostics API access is denied.
+- Diagnostics output only exposes safe operational status fields and redacts sensitive values.
+- The UI periodically refreshes diagnostics status and shows explicit user-facing messages for auth/disabled/rate-limit cases.
+- Pending debounced settings saves are flushed on unload using `sendBeacon` fallback.
+
+### 🧭 General Runtime Operation (Web UI)
+
+| Setting/Env | Purpose | Default |
+|---|---|---|
+| `webui_auth_enabled` | Enables Web UI Basic Auth protection at runtime (set from Settings tab). | `false` |
+| `TDM_WEBUI_AUTH_USERNAME` / `TDM_WEBUI_AUTH_PASSWORD` | Credentials used only when `webui_auth_enabled=true`. | unset |
+| `TDM_WEBUI_ALLOWED_ORIGINS` | Comma-separated CORS allowlist (`http(s)://host[:port]`). | wildcard (`*`) when unset |
+| Diagnostics Mode | Temporary runtime diagnostics visibility from Web UI. | disabled |
+
+**Diagnostics API behavior (protected):**
+
+- `GET /api/diagnostics/status` → returns current runtime enable state.
+- `POST /api/diagnostics/enable` → enables diagnostics runtime mode.
+- `POST /api/diagnostics/disable` → disables diagnostics runtime mode.
+- `GET /api/diagnostics` → returns safe operational diagnostics only when enabled.
+
+**Important runtime notes:**
+
+- Diagnostics mode is reset after restart.
+- If Web UI auth is disabled, diagnostics endpoints are denied.
+- If auth is enabled but credentials are missing, protected routes fail closed.
 
 ### 🧑‍💻 From Source (for Developers)
 
@@ -73,6 +126,8 @@ Visit 👉 **<http://localhost:8080>**
 3. The miner auto-fetches available campaigns
 4. Select games you want to farm → click **Reload**
 5. TDM starts mining drops automatically 🎉
+
+For Web UI auth behavior verification, see test coverage in `tests/test_webui_auth.py` and `tests/test_webui_auth_middleware.py`.
 
 📝 **Tip:**  
 Make sure your Twitch account is linked to your game accounts →  

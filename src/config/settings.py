@@ -47,6 +47,7 @@ default_settings = {
         "UNKNOWN": True,
     },
     "proxy": "",
+    "webui_auth_enabled": False,
 }
 
 
@@ -60,6 +61,7 @@ class Settings:
     minimum_refresh_interval_minutes: int
     mining_benefits: dict[str, bool]
     proxy: str
+    webui_auth_enabled: bool
 
     def __init__(self):
         self.load()

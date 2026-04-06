@@ -9,8 +9,11 @@ const state = {
     settings: {},
     currentDrop: null,
     countdownTimer: null,  // Track the active countdown timer
-    translations: {}  // Store current translations
+    translations: {},  // Store current translations
+    settingsSaveTimer: null
 };
+
+const SETTINGS_SAVE_DEBOUNCE_MS = 400;
 
 // ==================== Version Checking ====================
 
@@ -660,7 +663,7 @@ function campaignMatchesFilters(campaign, filters) {
 
 function onInventoryFilterChange() {
     // Save filter state to settings and re-render inventory
-    saveSettings();
+    queueSettingsSave();
     renderInventory();
 }
 
@@ -684,7 +687,7 @@ function clearInventoryFilters() {
     updateGameTagsDisplay();
 
     // Save and re-render
-    saveSettings();
+    queueSettingsSave();
     renderInventory();
 }
 
@@ -769,7 +772,7 @@ function toggleGameSelection(gameName) {
 
     updateGameTagsDisplay();
     renderGameDropdown(document.getElementById('inventory-game-search').value);
-    saveSettings();
+    queueSettingsSave();
     renderInventory();
 }
 
@@ -779,7 +782,7 @@ function removeGameTag(gameName) {
         selectedInventoryGames.splice(index, 1);
         updateGameTagsDisplay();
         renderGameDropdown(document.getElementById('inventory-game-search').value);
-        saveSettings();
+        queueSettingsSave();
         renderInventory();
     }
 }
@@ -1041,6 +1044,7 @@ function updateLoginStatus(data) {
 function updateSettingsUI(settings) {
     state.settings = settings;
     document.getElementById('dark-mode').checked = settings.dark_mode || false;
+    document.getElementById('webui-auth-enabled').checked = settings.webui_auth_enabled || false;
     document.getElementById('connection-quality').value = settings.connection_quality || 1;
     document.getElementById('minimum-refresh-interval').value = settings.minimum_refresh_interval_minutes || 30;
 
@@ -1298,7 +1302,7 @@ function handleDragEnd(e) {
     renderChannels();
 
     // Save settings
-    saveSettings();
+    queueSettingsSave();
 }
 
 function toggleGameWatch(gameName, checked) {
@@ -1316,7 +1320,7 @@ function toggleGameWatch(gameName, checked) {
     state.settings.games_to_watch = games;
     renderGamesToWatch();
     renderChannels();
-    saveSettings();
+    queueSettingsSave();
 }
 
 function removeGameFromWatch(gameName) {
@@ -1327,7 +1331,7 @@ function removeGameFromWatch(gameName) {
         state.settings.games_to_watch = games;
         renderGamesToWatch();
         renderChannels();
-        saveSettings();
+        queueSettingsSave();
     }
 }
 
@@ -1335,14 +1339,14 @@ function selectAllGames() {
     state.settings.games_to_watch = Array.from(availableGames).sort();
     renderGamesToWatch();
     renderChannels();
-    saveSettings();
+    queueSettingsSave();
 }
 
 function deselectAllGames() {
     state.settings.games_to_watch = [];
     renderGamesToWatch();
     renderChannels();
-    saveSettings();
+    queueSettingsSave();
 }
 
 function flashTitle() {
@@ -1469,9 +1473,10 @@ async function verifyProxy() {
     }
 }
 
-async function saveSettings() {
-    const settings = {
+function buildSettingsPayload() {
+    return {
         dark_mode: document.getElementById('dark-mode').checked,
+        webui_auth_enabled: document.getElementById('webui-auth-enabled').checked,
         language: document.getElementById('language').value,
         connection_quality: parseInt(document.getElementById('connection-quality').value),
         minimum_refresh_interval_minutes: parseInt(document.getElementById('minimum-refresh-interval').value),
@@ -1485,6 +1490,10 @@ async function saveSettings() {
             "UNKNOWN": document.getElementById('mining-benefit-unknown')?.checked
         }
     };
+}
+
+async function saveSettings() {
+    const settings = buildSettingsPayload();
 
     try {
         await fetch('/api/settings', {
@@ -1496,6 +1505,40 @@ async function saveSettings() {
     } catch (error) {
         console.error('Failed to save settings:', error);
     }
+}
+
+function queueSettingsSave() {
+    if (state.settingsSaveTimer) {
+        clearTimeout(state.settingsSaveTimer);
+    }
+    state.settingsSaveTimer = setTimeout(() => {
+        state.settingsSaveTimer = null;
+        saveSettings();
+    }, SETTINGS_SAVE_DEBOUNCE_MS);
+}
+
+function flushPendingSettingsOnUnload() {
+    if (!state.settingsSaveTimer) {
+        return;
+    }
+    clearTimeout(state.settingsSaveTimer);
+    state.settingsSaveTimer = null;
+
+    const settings = buildSettingsPayload();
+    const body = JSON.stringify(settings);
+    if (navigator.sendBeacon) {
+        const blob = new Blob([body], { type: 'application/json' });
+        navigator.sendBeacon('/api/settings', blob);
+        return;
+    }
+    fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        keepalive: true
+    }).catch(() => {
+        // ignore on unload
+    });
 }
 
 async function fetchAndPopulateLanguages() {
@@ -1884,6 +1927,120 @@ async function reloadCampaigns() {
     }
 }
 
+function setDiagnosticsTabVisible(visible) {
+    const button = document.getElementById('diagnostics-tab-button');
+    if (!button) return;
+    button.style.display = visible ? '' : 'none';
+    if (!visible && document.getElementById('diagnostics-tab')?.classList.contains('active')) {
+        switchTab('main');
+    }
+}
+
+function showDiagnosticsStatusMessage(message, type = 'info') {
+    const statusEl = document.getElementById('diagnostics-status-message');
+    if (!statusEl) return;
+    if (!message) {
+        statusEl.style.display = 'none';
+        statusEl.textContent = '';
+        statusEl.style.color = '';
+        return;
+    }
+    statusEl.style.display = 'block';
+    statusEl.textContent = message;
+    statusEl.style.color = type === 'error' ? 'var(--error-color)' : 'var(--text-secondary)';
+}
+
+async function refreshDiagnosticsStatus() {
+    try {
+        const response = await fetch('/api/diagnostics/status');
+        if (!response.ok) {
+            setDiagnosticsTabVisible(false);
+            if (response.status === 403) {
+                showDiagnosticsStatusMessage('Diagnostics requires Web UI authentication and an authenticated session.', 'error');
+            } else if (response.status === 429) {
+                showDiagnosticsStatusMessage('Too many diagnostics/auth attempts. Please wait and try again.', 'error');
+            } else {
+                showDiagnosticsStatusMessage('Diagnostics status unavailable right now.', 'error');
+            }
+            return;
+        }
+        const data = await response.json();
+        setDiagnosticsTabVisible(Boolean(data.enabled));
+        showDiagnosticsStatusMessage(
+            data.enabled
+                ? 'Diagnostics mode is enabled for this runtime session.'
+                : 'Diagnostics mode is disabled for this runtime session.'
+        );
+    } catch (error) {
+        setDiagnosticsTabVisible(false);
+        showDiagnosticsStatusMessage('Diagnostics status unavailable right now.', 'error');
+    }
+}
+
+async function enableDiagnosticsMode() {
+    try {
+        const response = await fetch('/api/diagnostics/enable', { method: 'POST' });
+        if (response.ok) {
+            await refreshDiagnosticsStatus();
+            showDiagnosticsStatusMessage('Diagnostics enabled.');
+            return;
+        }
+        if (response.status === 403) {
+            showDiagnosticsStatusMessage('Cannot enable diagnostics: authentication is required.', 'error');
+        } else if (response.status === 429) {
+            showDiagnosticsStatusMessage('Too many attempts. Please wait before enabling diagnostics again.', 'error');
+        } else {
+            showDiagnosticsStatusMessage('Could not enable diagnostics.', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to enable diagnostics:', error);
+        showDiagnosticsStatusMessage('Could not enable diagnostics.', 'error');
+    }
+}
+
+async function disableDiagnosticsMode() {
+    try {
+        const response = await fetch('/api/diagnostics/disable', { method: 'POST' });
+        if (response.ok) {
+            await refreshDiagnosticsStatus();
+            showDiagnosticsStatusMessage('Diagnostics disabled.');
+            return;
+        }
+        if (response.status === 403) {
+            showDiagnosticsStatusMessage('Cannot disable diagnostics: authentication is required.', 'error');
+        } else if (response.status === 429) {
+            showDiagnosticsStatusMessage('Too many attempts. Please wait before disabling diagnostics again.', 'error');
+        } else {
+            showDiagnosticsStatusMessage('Could not disable diagnostics.', 'error');
+        }
+    } catch (error) {
+        console.error('Failed to disable diagnostics:', error);
+        showDiagnosticsStatusMessage('Could not disable diagnostics.', 'error');
+    }
+}
+
+async function loadDiagnosticsData() {
+    const output = document.getElementById('diagnostics-output');
+    if (!output) return;
+    try {
+        const response = await fetch('/api/diagnostics');
+        if (!response.ok) {
+            if (response.status === 403) {
+                output.textContent = 'Diagnostics is disabled or authentication is missing.';
+            } else if (response.status === 429) {
+                output.textContent = 'Too many requests. Try again shortly.';
+            } else {
+                output.textContent = 'Diagnostics unavailable.';
+            }
+            return;
+        }
+        const data = await response.json();
+        output.textContent = JSON.stringify(data, null, 2);
+    } catch (error) {
+        output.textContent = 'Diagnostics unavailable.';
+    }
+}
+
 
 // ==================== Tab Management ====================
 
@@ -1899,6 +2056,9 @@ function switchTab(tabName) {
     // Show selected tab
     document.getElementById(`${tabName}-tab`).classList.add('active');
     document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+    if (tabName === 'diagnostics') {
+        loadDiagnosticsData();
+    }
 }
 
 // ==================== Event Listeners ====================
@@ -1906,6 +2066,8 @@ function switchTab(tabName) {
 document.addEventListener('DOMContentLoaded', () => {
     // Fetch and display version information
     fetchAndDisplayVersion();
+    refreshDiagnosticsStatus();
+    setInterval(refreshDiagnosticsStatus, 15000);
 
     // Tab switching
     document.querySelectorAll('.tab-button').forEach(button => {
@@ -1927,11 +2089,12 @@ document.addEventListener('DOMContentLoaded', () => {
             document.body.classList.remove('dark-mode');
         }
         // Then save settings
-        saveSettings();
+        queueSettingsSave();
     });
-    document.getElementById('language').addEventListener('change', saveSettings);
-    document.getElementById('connection-quality').addEventListener('change', saveSettings);
-    document.getElementById('minimum-refresh-interval').addEventListener('change', saveSettings);
+    document.getElementById('language').addEventListener('change', queueSettingsSave);
+    document.getElementById('webui-auth-enabled').addEventListener('change', queueSettingsSave);
+    document.getElementById('connection-quality').addEventListener('change', queueSettingsSave);
+    document.getElementById('minimum-refresh-interval').addEventListener('change', queueSettingsSave);
     // Proxy uses a manual "Set Proxy" button instead of auto-save
     document.getElementById('set-proxy-btn').addEventListener('click', () => {
         const proxyInput = document.getElementById('proxy-url');
@@ -1940,11 +2103,13 @@ document.addEventListener('DOMContentLoaded', () => {
         // Only save if changed
         if (newValue !== (state.settings.proxy || '')) {
             state.settings.proxy = newValue;
-            saveSettings();
+            queueSettingsSave();
         }
     });
     document.getElementById('verify-proxy-btn').addEventListener('click', verifyProxy);
     document.getElementById('reload-btn').addEventListener('click', reloadCampaigns);
+    document.getElementById('enable-diagnostics-btn').addEventListener('click', enableDiagnosticsMode);
+    document.getElementById('disable-diagnostics-btn').addEventListener('click', disableDiagnosticsMode);
 
 
     // Games to watch management
@@ -2005,6 +2170,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Request notification permission
     if ('Notification' in window && Notification.permission === 'default') {
         Notification.requestPermission();
+    }
+});
+
+window.addEventListener('beforeunload', flushPendingSettingsOnUnload);
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        refreshDiagnosticsStatus();
     }
 });
 
