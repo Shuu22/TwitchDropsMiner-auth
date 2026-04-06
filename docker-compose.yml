@@ -12,4 +12,9 @@ services:
     environment:
       # Set timezone (optional, defaults to UTC)
       - TZ=Australia/Sydney
+      # Optional Web UI Basic Auth credentials (enable in Web UI settings)
+      # - TDM_WEBUI_AUTH_USERNAME=admin
+      # - TDM_WEBUI_AUTH_PASSWORD=change-me
+      # Optional: explicit CORS origins for production (comma-separated)
+      # - TDM_WEBUI_ALLOWED_ORIGINS=https://example.com,https://admin.example.com
     restart: unless-stopped
